@@ -1,0 +1,1200 @@
+# Auto-Aim 自动瞄准模组实现计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 实现一个纯客户端 Forge 1.20.1 (47.4.22) 自动瞄准模组：准星指向锁定 + 持续追踪 + ESP 框线 + 弹道武器轨迹预测瞄准与弧线显示 + 快捷键弹出配置界面。
+
+**Architecture:** 纯客户端、零第三方依赖。`AimController` 为不依赖 Minecraft 类的纯数学类（可直接 JUnit 测试）；其余组件（扫描/锁定、渲染、配置界面）通过 Forge 事件总线接线。普通模式用 `lookAt` 命中角，弹道模式用 `solveLaunch` 重力+提前量求解。
+
+**Tech Stack:** Java 17，ForgeGradle 6，Forge 1.20.1-47.4.22（official mappings），JUnit 5（仅测纯数学类）。
+
+**Spec:** `docs/superpowers/specs/2026-08-26-auto-aim-mod-design.md`
+
+## Global Constraints
+
+- 项目目录：`D:\mcmod\auto-aim\auto-aim`；所有产物保存在此。
+- 运行 gradle 用 `./gradlew`（bash），不用 cmd；JDK 走 `gradle.properties` 里的 `org.gradle.java.home=D:/App/jdk-17`。
+- 包结构 `com.autoaim`；MODID 常量 = `"auto-aim"`（必须与 `gradle.properties` 的 `mod_id` 一致）。
+- `mods.toml` 设 `clientSideOnly=true`。
+- 弹道常量（已对照反编译源码核实）：弓 满弓=3.0（`BowItem.getPowerForTime(useTicks)×3.0`）、弩=3.15、三叉戟=2.5、投掷物=1.5；重力 箭/三叉戟=0.05、投掷物=0.03；箭阻力 0.99/ tick。
+- 弹道求解最大飞行时间固定 3.0 秒（`AimController.MAX_FLIGHT_TIME`），不暴露为配置。
+- 项目不是 git 仓库：每个任务末尾的「Checkpoint」用编译/测试命令验证，不做 git commit。
+
+---
+
+### Task 1: 项目脚手架重构
+
+**Files:**
+- Modify: `gradle.properties`
+- Modify: `build.gradle`
+- Modify: `src/main/resources/META-INF/mods.toml`
+- Create: `src/main/java/com/autoaim/AutoAimMod.java`
+- Create: `src/main/java/com/autoaim/Config.java`
+- Create: `src/main/java/com/autoaim/client/KeyBindings.java`
+- Delete: `src/main/java/com/example/examplemod/ExampleMod.java`
+- Delete: `src/main/java/com/example/examplemod/Config.java`
+
+**Interfaces:**
+- Produces: `AutoAimMod.MODID = "auto-aim"`；`Config.SPEC`、8 个 `ForgeConfigSpec` 值 + 缓存静态字段 + `Config.refresh()`/`Config.save()`；`KeyBindings` 4 个 `KeyMapping`。
+
+- [ ] **Step 1: 更新 gradle.properties**
+
+将 `mod_group_id`、`mod_authors`、`mod_description` 三行替换为：
+
+```properties
+mod_group_id=com.autoaim
+mod_authors=deepseek
+mod_description=Auto-Aim: 自动瞄准模组，支持普通武器准星锁定与弹道武器轨迹预测瞄准。
+```
+
+- [ ] **Step 2: build.gradle 增加测试源集**
+
+在 `dependencies {}` 块内追加：
+
+```gradle
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+```
+
+在文件末尾追加：
+
+```gradle
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+```
+
+- [ ] **Step 3: mods.toml 设 clientSideOnly**
+
+在 `mods.toml` 的 `#clientSideOnly=true` 一行，把整行改为：
+
+```toml
+clientSideOnly=true
+```
+
+- [ ] **Step 4: 删除旧示例文件**
+
+删除 `src/main/java/com/example/examplemod/ExampleMod.java` 与 `src/main/java/com/example/examplemod/Config.java`（及其父目录 `com/example`）。
+
+- [ ] **Step 5: 创建 AutoAimMod.java**
+
+`src/main/java/com/autoaim/AutoAimMod.java`：
+
+```java
+package com.autoaim;
+
+import com.mojang.logging.LogUtils;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import org.slf4j.Logger;
+
+@Mod(AutoAimMod.MODID)
+public class AutoAimMod {
+    public static final String MODID = "auto-aim";
+    public static final Logger LOGGER = LogUtils.getLogger();
+
+    public AutoAimMod(FMLJavaModLoadingContext context) {
+        IEventBus modEventBus = context.getModEventBus();
+        MinecraftForge.EVENT_BUS.register(this);
+        context.registerConfig(ModConfig.Type.CLIENT, Config.SPEC);
+        modEventBus.register(Config.class);
+    }
+}
+```
+
+- [ ] **Step 6: 创建 Config.java**
+
+`src/main/java/com/autoaim/Config.java`：
+
+```java
+package com.autoaim;
+
+import net.minecraftforge.common.ForgeConfigSpec;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.event.config.ModConfigEvent;
+
+@Mod.EventBusSubscriber(modid = AutoAimMod.MODID, bus = Mod.EventBusSubscriber.Bus.MOD)
+public final class Config {
+    private static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();
+
+    public static final ForgeConfigSpec.IntValue DISPLAY_RANGE = BUILDER
+            .comment("ESP 显示范围（格）")
+            .defineInRange("displayRange", 24, 8, 128);
+    public static final ForgeConfigSpec.IntValue LOCK_RANGE = BUILDER
+            .comment("锁定搜索范围（格）")
+            .defineInRange("lockRange", 24, 8, 128);
+    public static final ForgeConfigSpec.DoubleValue LOCK_ANGLE = BUILDER
+            .comment("准星容差角（度）")
+            .defineInRange("lockAngle", 15.0, 1.0, 60.0);
+    public static final ForgeConfigSpec.DoubleValue AIM_SPEED = BUILDER
+            .comment("自动瞄准平滑速度（越大越快）")
+            .defineInRange("aimSpeed", 0.25, 0.02, 1.0);
+    public static final ForgeConfigSpec.BooleanValue TARGET_HOSTILES_ONLY = BUILDER
+            .comment("仅锁定敌对生物")
+            .define("targetHostilesOnly", false);
+    public static final ForgeConfigSpec.BooleanValue INCLUDE_PLAYERS = BUILDER
+            .comment("是否将玩家作为目标")
+            .define("includePlayers", false);
+    public static final ForgeConfigSpec.BooleanValue SHOW_LOCKED_TARGET = BUILDER
+            .comment("锁定目标始终高亮")
+            .define("showLockedTarget", true);
+    public static final ForgeConfigSpec.BooleanValue SHOW_TRAJECTORY = BUILDER
+            .comment("显示弹道轨迹弧线")
+            .define("showTrajectory", true);
+
+    public static final ForgeConfigSpec SPEC = BUILDER.build();
+
+    public static int displayRange;
+    public static int lockRange;
+    public static double lockAngle;
+    public static double aimSpeed;
+    public static boolean targetHostilesOnly;
+    public static boolean includePlayers;
+    public static boolean showLockedTarget;
+    public static boolean showTrajectory;
+
+    private Config() {}
+
+    @SubscribeEvent
+    static void onLoad(final ModConfigEvent event) {
+        refresh();
+    }
+
+    public static void refresh() {
+        displayRange = DISPLAY_RANGE.get();
+        lockRange = LOCK_RANGE.get();
+        lockAngle = LOCK_ANGLE.get();
+        aimSpeed = AIM_SPEED.get();
+        targetHostilesOnly = TARGET_HOSTILES_ONLY.get();
+        includePlayers = INCLUDE_PLAYERS.get();
+        showLockedTarget = SHOW_LOCKED_TARGET.get();
+        showTrajectory = SHOW_TRAJECTORY.get();
+    }
+
+    public static void save() {
+        SPEC.save();
+    }
+}
+```
+
+- [ ] **Step 7: 创建 KeyBindings.java**
+
+`src/main/java/com/autoaim/client/KeyBindings.java`：
+
+```java
+package com.autoaim.client;
+
+import com.mojang.blaze3d.platform.InputConstants;
+import net.minecraft.client.KeyMapping;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+
+public final class KeyBindings {
+    public static final String CATEGORY = "key.categories.autoaim";
+
+    public static final KeyMapping TOGGLE_DISPLAY = new KeyMapping("key.autoaim.toggle_display", InputConstants.KEY_H, CATEGORY);
+    public static final KeyMapping LOCK = new KeyMapping("key.autoaim.lock", InputConstants.KEY_K, CATEGORY);
+    public static final KeyMapping UNLOCK = new KeyMapping("key.autoaim.unlock", InputConstants.KEY_L, CATEGORY);
+    public static final KeyMapping OPEN_CONFIG = new KeyMapping("key.autoaim.open_config", InputConstants.KEY_O, CATEGORY);
+
+    private KeyBindings() {}
+
+    public static void registerAll(RegisterKeyMappingsEvent event) {
+        event.register(TOGGLE_DISPLAY);
+        event.register(LOCK);
+        event.register(UNLOCK);
+        event.register(OPEN_CONFIG);
+    }
+}
+```
+
+- [ ] **Step 8: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`，无编译错误。
+
+---
+
+### Task 2: AimController 纯数学类 + 单元测试（TDD）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/AimController.java`
+- Test: `src/test/java/com/autoaim/client/AimControllerTest.java`
+
+**Interfaces:**
+- Produces（供 Task 4/5/7 使用）：
+  - `record AimController.ProjectileSpecs(double speed, double gravity, double drag)`
+  - `record AimController.V3(double x, double y, double z)`（含 `add/sub/mul/lengthSqr/length`）
+  - `record AimController.LookAngles(float yaw, float pitch)`
+  - `static float wrapDegrees(float)`
+  - `static V3 directionFromRotation(float yaw, float pitch)`
+  - `static LookAngles lookAt(V3 eye, V3 target)`
+  - `static Optional<LookAngles> solveLaunch(V3 eye, V3 targetPos, V3 targetVel, ProjectileSpecs s)`
+  - `static List<V3> computeTrajectory(V3 eye, float yaw, float pitch, ProjectileSpecs s, int steps)`
+
+- [ ] **Step 1: 写失败测试**
+
+`src/test/java/com/autoaim/client/AimControllerTest.java`：
+
+```java
+package com.autoaim.client;
+
+import com.autoaim.client.AimController.LookAngles;
+import com.autoaim.client.AimController.ProjectileSpecs;
+import com.autoaim.client.AimController.V3;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class AimControllerTest {
+    private static final double TOL = 0.15;
+
+    /** 用与 AimController 相同物理逐 tick 模拟，返回弹体与（移动）目标的最短距离。 */
+    private static double simulateClosest(V3 eye, V3 targetPos, V3 targetVel, ProjectileSpecs s, LookAngles angles) {
+        V3 pos = eye;
+        V3 vel = AimController.directionFromRotation(angles.yaw(), angles.pitch()).mul(s.speed());
+        V3 target = targetPos;
+        double best = Double.MAX_VALUE;
+        for (int t = 0; t < 200; t++) { // 最多 10 秒
+            pos = pos.add(vel);
+            vel = new V3(vel.x * s.drag(), (vel.y - s.gravity()) * s.drag(), vel.z * s.drag());
+            target = targetPos.add(targetVel.mul((t + 1) * 0.05));
+            best = Math.min(best, pos.sub(target).length());
+        }
+        return best;
+    }
+
+    @Test
+    void wrapDegrees_normalizesToSigned180() {
+        assertEquals(-10.0F, AimController.wrapDegrees(350.0F), 0.001F);
+        assertEquals(170.0F, AimController.wrapDegrees(-190.0F), 0.001F);
+        assertEquals(45.0F, AimController.wrapDegrees(405.0F), 0.001F);
+    }
+
+    @Test
+    void lookAt_southIsYawZero() {
+        LookAngles a = AimController.lookAt(new V3(0, 0, 0), new V3(0, 0, 10));
+        assertEquals(0.0F, a.yaw(), 0.01F);
+        assertEquals(0.0F, a.pitch(), 0.01F);
+    }
+
+    @Test
+    void lookAt_eastIsYawNegativeNinety() {
+        LookAngles a = AimController.lookAt(new V3(0, 0, 0), new V3(10, 0, 0));
+        assertEquals(-90.0F, a.yaw(), 0.01F);
+    }
+
+    @Test
+    void lookAt_upIsNegativePitch() {
+        LookAngles a = AimController.lookAt(new V3(0, 0, 0), new V3(0, 10, 0));
+        assertEquals(-90.0F, a.pitch(), 0.01F);
+    }
+
+    @Test
+    void solveLaunch_staticTargetIsHit() {
+        ProjectileSpecs s = new ProjectileSpecs(3.0, 0.05, 0.99);
+        V3 eye = new V3(0, 1, 0);
+        V3 target = new V3(0, 1, 10);
+        Optional<LookAngles> opt = AimController.solveLaunch(eye, target, new V3(0, 0, 0), s);
+        assertTrue(opt.isPresent(), "10 格平射目标应可解");
+        double dist = simulateClosest(eye, target, new V3(0, 0, 0), s, opt.get());
+        assertTrue(dist < TOL, "静态目标实际命中距离应 < " + TOL + "，实际 " + dist);
+    }
+
+    @Test
+    void solveLaunch_leadsMovingTarget() {
+        ProjectileSpecs s = new ProjectileSpecs(3.0, 0.05, 0.99);
+        V3 eye = new V3(0, 1, 0);
+        V3 target = new V3(0, 1, 10);
+        V3 vel = new V3(0.4, 0, 0); // 目标向右横移
+        Optional<LookAngles> opt = AimController.solveLaunch(eye, target, vel, s);
+        assertTrue(opt.isPresent());
+        // 有提前量：应朝 +X（东，yaw 更负）偏移
+        assertTrue(opt.get().yaw() < 0, "移动目标应向左提前，yaw 为负");
+        double dist = simulateClosest(eye, target, vel, s, opt.get());
+        assertTrue(dist < TOL, "移动目标实际命中距离应 < " + TOL + "，实际 " + dist);
+    }
+
+    @Test
+    void solveLaunch_returnsEmptyWhenTooFar() {
+        ProjectileSpecs s = new ProjectileSpecs(3.0, 0.05, 0.99);
+        V3 eye = new V3(0, 1, 0);
+        V3 target = new V3(0, 1, 50); // 3 秒最大射程内不可达
+        assertTrue(AimController.solveLaunch(eye, target, new V3(0, 0, 0), s).isEmpty());
+    }
+
+    @Test
+    void computeTrajectory_hasExpectedLengthAndFalls() {
+        ProjectileSpecs s = new ProjectileSpecs(3.0, 0.05, 0.99);
+        List<V3> pts = AimController.computeTrajectory(new V3(0, 2, 0), 0.0F, 0.0F, s, 48);
+        assertEquals(49, pts.size());
+        assertTrue(pts.get(48).y() < pts.get(0).y(), "平射轨迹应随重力下降");
+        assertTrue(pts.get(48).z() > 0, "平射轨迹应向前延伸");
+    }
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew test --tests "com.autoaim.client.AimControllerTest" --console=plain -q
+```
+Expected: 编译失败（`AimController` 不存在）。
+
+- [ ] **Step 3: 实现 AimController.java**
+
+`src/main/java/com/autoaim/client/AimController.java`：
+
+```java
+package com.autoaim.client;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * 纯数学弹道计算。不依赖任何 Minecraft 类，可直接用 JUnit 测试。
+ */
+public final class AimController {
+    /** 弹道求解最大飞行秒数（用户要求不暴露为配置，内部固定 3.0 秒）。 */
+    public static final double MAX_FLIGHT_TIME = 3.0;
+
+    /** 弹体参数：初速（格/tick）、重力（格/tick²）、空气阻力（每 tick 速度倍率）。 */
+    public record ProjectileSpecs(double speed, double gravity, double drag) {}
+
+    /** 轻量 3D 向量。 */
+    public record V3(double x, double y, double z) {
+        public V3 add(V3 o) { return new V3(x + o.x, y + o.y, z + o.z); }
+        public V3 sub(V3 o) { return new V3(x - o.x, y - o.y, z - o.z); }
+        public V3 mul(double s) { return new V3(x * s, y * s, z * s); }
+        public double lengthSqr() { return x * x + y * y + z * z; }
+        public double length() { return Math.sqrt(lengthSqr()); }
+    }
+
+    /** 视角角：yaw 水平旋转、pitch 俯仰，均角度制。 */
+    public record LookAngles(float yaw, float pitch) {}
+
+    private AimController() {}
+
+    /** 角度差规范到 [-180, 180]。 */
+    public static float wrapDegrees(float deg) {
+        float w = deg % 360.0F;
+        if (w > 180.0F) w -= 360.0F;
+        if (w < -180.0F) w += 360.0F;
+        return w;
+    }
+
+    /** 由 yaw/pitch 构造方向单位向量（与 MC Vec3.directionFromRotation 等价）。 */
+    public static V3 directionFromRotation(float yaw, float pitch) {
+        double p = Math.toRadians(pitch);
+        double y = Math.toRadians(yaw);
+        double cosP = Math.cos(p);
+        return new V3(-cosP * Math.sin(y), -Math.sin(p), cosP * Math.cos(y));
+    }
+
+    /** 普通命中角：视线直接指向目标点。 */
+    public static LookAngles lookAt(V3 eye, V3 target) {
+        V3 d = target.sub(eye);
+        double horiz = Math.sqrt(d.x * d.x + d.z * d.z);
+        float yaw = (float) (Math.toDegrees(Math.atan2(d.z, d.x)) - 90.0);
+        float pitch = (float) (-Math.toDegrees(Math.atan2(d.y, horiz)));
+        return new LookAngles(yaw, pitch);
+    }
+
+    /**
+     * 弹道求解：求发射角使弹体飞行 t 秒后命中目标（目标按自身速度外推）。
+     * 返回空表示目标在当前弹速/重力下不可达。
+     */
+    public static Optional<LookAngles> solveLaunch(V3 eye, V3 targetPos, V3 targetVel, ProjectileSpecs s) {
+        double t = binarySearchFlightTime(eye, targetPos, targetVel, s);
+        if (t <= 0) return Optional.empty();
+
+        V3 targetAtT = targetPos.add(targetVel.mul(t));
+        V3 r = targetAtT.sub(eye);
+        double horiz = Math.sqrt(r.x * r.x + r.z * r.z);
+        if (horiz < 1.0E-5) return Optional.empty();
+
+        double vyTerm = r.y + 0.5 * s.gravity() * t * t; // 需 v0*sin(pitch)*t 提供的高度
+        double sinPitch = vyTerm / (s.speed() * t);
+        if (Math.abs(sinPitch) > 1.0) return Optional.empty();
+
+        float yaw = (float) (Math.toDegrees(Math.atan2(r.z, r.x)) - 90.0);
+        float pitch = (float) Math.toDegrees(Math.asin(sinPitch));
+        return Optional.of(new LookAngles(yaw, pitch));
+    }
+
+    /**
+     * 在 [0.05, MAX_FLIGHT_TIME] 内求解使 q(t)=0 的最小正根。
+     * q(t) = (v0·t)² − |r_h(t)|² − (r_y(t)+½g·t²)²；q>=0 表示 t 时刻弹体可及。
+     * 先大步扫描找首次跨零区间，再二分精化。
+     */
+    private static double binarySearchFlightTime(V3 eye, V3 targetPos, V3 targetVel, ProjectileSpecs s) {
+        double tMin = 0.05;
+        double tMax = MAX_FLIGHT_TIME;
+        if (q(eye, targetPos, targetVel, s, tMax) < 0) return -1;
+
+        final int SCAN = 128;
+        double prevT = tMin;
+        double prevQ = q(eye, targetPos, targetVel, s, prevT);
+        for (int i = 1; i <= SCAN; i++) {
+            double t = tMin + (tMax - tMin) * i / SCAN;
+            double q = q(eye, targetPos, targetVel, s, t);
+            if (q >= 0) {
+                double lo = prevQ >= 0 ? tMin : prevT;
+                double hi = t;
+                for (int k = 0; k < 48; k++) {
+                    double mid = (lo + hi) / 2.0;
+                    if (q(eye, targetPos, targetVel, s, mid) >= 0) hi = mid; else lo = mid;
+                }
+                return (lo + hi) / 2.0;
+            }
+            prevT = t;
+            prevQ = q;
+        }
+        return -1;
+    }
+
+    private static double q(V3 eye, V3 targetPos, V3 targetVel, ProjectileSpecs s, double t) {
+        V3 r = targetPos.add(targetVel.mul(t)).sub(eye);
+        double horizSqr = r.x * r.x + r.z * r.z;
+        double vy = r.y + 0.5 * s.gravity() * t * t;
+        return s.speed() * s.speed() * t * t - horizSqr - vy * vy;
+    }
+
+    /** 计算弹道轨迹点列（世界坐标）：从 eye 沿 (yaw,pitch) 以弹速逐 tick 模拟，含重力与阻力。 */
+    public static List<V3> computeTrajectory(V3 eye, float yaw, float pitch, ProjectileSpecs s, int steps) {
+        List<V3> points = new ArrayList<>();
+        V3 vel = directionFromRotation(yaw, pitch).mul(s.speed());
+        V3 pos = eye;
+        points.add(pos);
+        for (int i = 0; i < steps; i++) {
+            pos = pos.add(vel);
+            vel = new V3(vel.x * s.drag(), (vel.y - s.gravity()) * s.drag(), vel.z * s.drag());
+            points.add(pos);
+        }
+        return points;
+    }
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew test --tests "com.autoaim.client.AimControllerTest" --console=plain
+```
+Expected: 全部 6 个测试 PASS。
+
+- [ ] **Step 5: Checkpoint — 完整编译 + 测试**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava test --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 3: ProjectileSpecsProvider（武器 → 弹道参数）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/ProjectileSpecsProvider.java`
+
+**Interfaces:**
+- Consumes: `AimController.ProjectileSpecs`
+- Produces: `static AimController.ProjectileSpecs specsFor(ItemStack stack, Player player)`，非弹道武器返回 `null`。
+
+- [ ] **Step 1: 实现**
+
+`src/main/java/com/autoaim/client/ProjectileSpecsProvider.java`：
+
+```java
+package com.autoaim.client;
+
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.CrossbowItem;
+import net.minecraft.world.item.EggItem;
+import net.minecraft.world.item.EnderpearlItem;
+import net.minecraft.world.item.ExperienceBottleItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.PotionItem;
+import net.minecraft.world.item.SnowballItem;
+import net.minecraft.world.item.TridentItem;
+
+/** 主手物品 → 弹道参数；非弹道武器返回 null（走普通命中角模式）。 */
+public final class ProjectileSpecsProvider {
+    private ProjectileSpecsProvider() {}
+
+    public static AimController.ProjectileSpecs specsFor(ItemStack stack, Player player) {
+        Item item = stack.getItem();
+        if (item instanceof BowItem) {
+            // 满弓 3.0；拉弓中按当前进度实时换算（与原版 BowItem.getPowerForTime 一致）
+            double power = 1.0;
+            if (player.isUsingItem() && player.getUseItem() == stack) {
+                int useTicks = stack.getUseDuration(player) - player.getUseItemRemainingTicks();
+                power = BowItem.getPowerForTime(useTicks);
+            }
+            return new AimController.ProjectileSpecs(power * 3.0, 0.05, 0.99);
+        }
+        if (item instanceof CrossbowItem) {
+            return new AimController.ProjectileSpecs(3.15, 0.05, 0.99);
+        }
+        if (item instanceof TridentItem) {
+            return new AimController.ProjectileSpecs(2.5, 0.05, 0.99);
+        }
+        if (item instanceof SnowballItem || item instanceof EggItem
+                || item instanceof EnderpearlItem || item instanceof ExperienceBottleItem) {
+            return new AimController.ProjectileSpecs(1.5, 0.03, 1.0);
+        }
+        if (item instanceof PotionItem) {
+            return new AimController.ProjectileSpecs(0.5, 0.05, 1.0);
+        }
+        return null;
+    }
+}
+```
+
+- [ ] **Step 2: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 4: TargetManager（扫描/筛选/锁定状态机）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/TargetManager.java`
+
+**Interfaces:**
+- Consumes: `Config`（静态字段）、`AutoAimMod.MODID`（不用）
+- Produces：
+  - `static boolean isDisplayEnabled()`
+  - `static void toggleDisplay()`
+  - `static void setDisplayEnabled(boolean)`
+  - `static Entity getLockedTarget()`
+  - `static void toggleLock()`
+  - `static void unlock()`
+  - `static void tick()`（每 tick 调用：节流刷新候选 + 失效自动解锁）
+  - `static List<LivingEntity> getCandidates()`
+
+- [ ] **Step 1: 实现**
+
+`src/main/java/com/autoaim/client/TargetManager.java`：
+
+```java
+package com.autoaim.client;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/** 候选扫描、目标筛选与锁定状态机。纯客户端。 */
+public final class TargetManager {
+    private static boolean displayEnabled = false;
+    private static Entity lockedTarget = null;
+    private static long lastScanTick = -1;
+    private static List<LivingEntity> candidates = new ArrayList<>();
+
+    private TargetManager() {}
+
+    public static boolean isDisplayEnabled() { return displayEnabled; }
+    public static void setDisplayEnabled(boolean b) { displayEnabled = b; }
+    public static void toggleDisplay() { displayEnabled = !displayEnabled; }
+    public static Entity getLockedTarget() { return lockedTarget; }
+    public static List<LivingEntity> getCandidates() { return candidates; }
+
+    public static void toggleLock() {
+        if (lockedTarget == null) lock(); else unlock();
+    }
+
+    public static void unlock() { lockedTarget = null; }
+
+    private static void lock() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) return;
+        LivingEntity picked = pickCrosshair(mc.player, candidates);
+        if (picked == null) picked = pickNearest(mc.player, candidates);
+        lockedTarget = picked;
+    }
+
+    /** 每 tick 调用：每 5 tick 刷新候选；锁定目标失效/超距/玩家死亡时自动解锁。 */
+    public static void tick() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) return;
+        long now = mc.level.getGameTime();
+        if (now - lastScanTick >= 5) {
+            lastScanTick = now;
+            candidates = scan(mc);
+        }
+        if (lockedTarget != null) {
+            Entity t = lockedTarget;
+            boolean lost = !t.isAlive() || t.getRemovalReason() != null
+                    || t.distanceToSqr(mc.player) > Config.lockRange * Config.lockRange * 2.25
+                    || mc.player.isDeadOrDying();
+            if (lost) unlock();
+        }
+    }
+
+    private static List<LivingEntity> scan(Minecraft mc) {
+        Player p = mc.player;
+        double range = Math.max(Config.displayRange, Config.lockRange);
+        AABB box = p.getBoundingBox().inflate(range);
+        return mc.level.getEntitiesOfClass(LivingEntity.class, box,
+                e -> e.isAlive()
+                        && e != p
+                        && (!(e instanceof Player) || Config.includePlayers)
+                        && e.distanceToSqr(p) <= range * range
+                        && (!Config.targetHostilesOnly || e instanceof Monster));
+    }
+
+    /** 准星指向锁定：取视角方向与目标方向夹角最小者，且夹角 <= lockAngle。 */
+    private static LivingEntity pickCrosshair(Player p, List<LivingEntity> list) {
+        Vec3 eye = p.getEyePosition(1.0F);
+        Vec3 view = p.getViewVector(1.0F);
+        LivingEntity best = null;
+        double bestAngle = Double.MAX_VALUE;
+        for (LivingEntity e : list) {
+            if (e.distanceToSqr(p) > Config.lockRange * Config.lockRange) continue;
+            Vec3 to = e.getEyePosition(1.0F).subtract(eye);
+            double len = to.length();
+            if (len < 1.0E-4) continue;
+            double dot = view.dot(to) / len;
+            double angleDeg = Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, dot))));
+            if (angleDeg < bestAngle) { bestAngle = angleDeg; best = e; }
+        }
+        return bestAngle <= Config.lockAngle ? best : null;
+    }
+
+    /** 兜底：锁定范围内最近生物。 */
+    private static LivingEntity pickNearest(Player p, List<LivingEntity> list) {
+        LivingEntity best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (LivingEntity e : list) {
+            double d = e.distanceToSqr(p);
+            if (d <= Config.lockRange * Config.lockRange && d < bestDist) {
+                bestDist = d;
+                best = e;
+            }
+        }
+        return best;
+    }
+}
+```
+
+- [ ] **Step 2: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 5: EspRenderer（ESP 框线 + 弹道弧线）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/EspRenderer.java`
+
+**Interfaces:**
+- Consumes: `TargetManager`、`Config`、`AimController`、`ProjectileSpecsProvider`、`ClientEvents.toV3`（改成自建私有转换）
+- Produces: `static void render(RenderLevelStageEvent event)`
+
+- [ ] **Step 1: 实现**
+
+`src/main/java/com/autoaim/client/EspRenderer.java`：
+
+```java
+package com.autoaim.client;
+
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.client.event.RenderLevelStageEvent;
+import org.joml.Matrix4f;
+
+import java.util.List;
+
+/** 世界渲染：候选/锁定 ESP 框线 + 弹道轨迹弧线。 */
+public final class EspRenderer {
+    private EspRenderer() {}
+
+    public static void render(RenderLevelStageEvent event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null) return;
+
+        // ---- 框线 ----
+        MultiBufferSource.BufferSource buffers = mc.renderBuffers().bufferSource();
+        VertexConsumer lines = buffers.getBuffer(RenderType.lines());
+
+        if (TargetManager.isDisplayEnabled()) {
+            double range = Config.displayRange;
+            for (LivingEntity e : TargetManager.getCandidates()) {
+                if (!e.isAlive() || e.distanceToSqr(mc.player) > range * range) continue;
+                LevelRenderer.renderLineBox(event.getPoseStack(), lines,
+                        e.getBoundingBox().inflate(0.02), 1.0F, 1.0F, 0.0F, 0.9F);
+            }
+        }
+        if (TargetManager.getLockedTarget() instanceof LivingEntity locked && Config.showLockedTarget) {
+            LevelRenderer.renderLineBox(event.getPoseStack(), lines,
+                    locked.getBoundingBox().inflate(0.03), 1.0F, 0.0F, 0.0F, 1.0F);
+        }
+        buffers.endBatch();
+
+        // ---- 弹道弧线 ----
+        if (Config.showTrajectory) {
+            AimController.ProjectileSpecs specs = ProjectileSpecsProvider.specsFor(mc.player.getMainHandItem(), mc.player);
+            if (specs != null) {
+                AimController.V3 eye = toV3(mc.player.getEyePosition(1.0F));
+                List<AimController.V3> pts = AimController.computeTrajectory(
+                        eye, mc.player.getYRot(), mc.player.getXRot(), specs, 48);
+                drawPolyline(event.getPoseStack().last().pose(), pts, 0.0F, 1.0F, 1.0F, 0.9F);
+            }
+        }
+    }
+
+    private static void drawPolyline(Matrix4f mat, List<AimController.V3> pts, float r, float g, float b, float a) {
+        if (pts.size() < 2) return;
+        BufferBuilder builder = Tesselator.getInstance().getBuilder();
+        builder.begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
+        for (int i = 0; i < pts.size() - 1; i++) {
+            AimController.V3 p = pts.get(i);
+            AimController.V3 q = pts.get(i + 1);
+            builder.vertex(mat, (float) p.x(), (float) p.y(), (float) p.z()).color(r, g, b, a).endVertex();
+            builder.vertex(mat, (float) q.x(), (float) q.y(), (float) q.z()).color(r, g, b, a).endVertex();
+        }
+        Tesselator.getInstance().end();
+    }
+
+    private static AimController.V3 toV3(Vec3 v) {
+        return new AimController.V3(v.x, v.y, v.z);
+    }
+}
+```
+
+- [ ] **Step 2: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 6: ConfigScreen（快捷键弹出的配置界面）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/gui/ConfigScreen.java`
+
+**Interfaces:**
+- Consumes: `Config`（8 个 ConfigValue + 缓存字段 + `refresh/save`）
+- Produces: `class ConfigScreen extends Screen`，构造 `ConfigScreen(Screen parent)` 与 `ConfigScreen()`
+
+- [ ] **Step 1: 实现**
+
+`src/main/java/com/autoaim/client/gui/ConfigScreen.java`：
+
+```java
+package com.autoaim.client.gui;
+
+import com.autoaim.Config;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+import net.minecraftforge.common.ForgeConfigSpec;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/** 简易配置界面：每行一个设置 + -/+ 或 开/关；改动即时生效，关闭写盘。 */
+public class ConfigScreen extends Screen {
+    private final Screen parent;
+    private final List<Row> rows = new ArrayList<>();
+
+    public ConfigScreen(Screen parent) {
+        super(Component.literal("Auto-Aim 设置"));
+        this.parent = parent;
+        rows.add(new NumRow(Config.DISPLAY_RANGE, "显示范围（格）", 8, 128, 4, 24));
+        rows.add(new NumRow(Config.LOCK_RANGE, "锁定范围（格）", 8, 128, 4, 24));
+        rows.add(new NumRow(Config.LOCK_ANGLE, "准星容差角（度）", 1, 60, 1, 15.0));
+        rows.add(new NumRow(Config.AIM_SPEED, "瞄准速度", 0.02, 1.0, 0.02, 0.25));
+        rows.add(new BoolRow(Config.TARGET_HOSTILES_ONLY, "仅锁定敌对生物", false));
+        rows.add(new BoolRow(Config.INCLUDE_PLAYERS, "包含玩家", false));
+        rows.add(new BoolRow(Config.SHOW_LOCKED_TARGET, "锁定目标高亮", true));
+        rows.add(new BoolRow(Config.SHOW_TRAJECTORY, "显示弹道轨迹", true));
+    }
+
+    public ConfigScreen() { this(null); }
+
+    @Override
+    protected void init() {
+        int left = this.width / 2 - 150;
+        int right = this.width / 2 + 150;
+        int y = 32;
+        for (Row row : rows) {
+            row.y = y;
+            row.build(this, left, right);
+            y += 26;
+        }
+        this.addRenderableWidget(Button.builder(Component.literal("保存"), b -> {
+            Config.refresh();
+            Config.save();
+        }).bounds(left, y + 10, 96, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("恢复默认"), b -> {
+            for (Row r : rows) r.reset();
+            Config.refresh();
+            Config.save();
+        }).bounds(left + 102, y + 10, 96, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("关闭"), b -> onClose())
+                .bounds(right - 96, y + 10, 96, 20).build());
+    }
+
+    @Override
+    public void render(GuiGraphics g, int mx, int my, float partialTick) {
+        this.renderBackground(g);
+        g.drawCenteredString(this.font, this.title, this.width / 2, 12, 0xFFFFFF);
+        for (Row r : rows) r.render(g, this.width / 2 - 138);
+        super.render(g, mx, my, partialTick);
+    }
+
+    @Override
+    public void onClose() {
+        this.minecraft.setScreen(this.parent);
+    }
+
+    @Override
+    public boolean isPauseScreen() { return false; }
+
+    private abstract static class Row {
+        final ForgeConfigSpec.ConfigValue<?> value;
+        final String label;
+        final Object defaultValue;
+        int y;
+
+        Row(ForgeConfigSpec.ConfigValue<?> value, String label, Object defaultValue) {
+            this.value = value;
+            this.label = label;
+            this.defaultValue = defaultValue;
+        }
+
+        abstract void build(ConfigScreen screen, int left, int right);
+        abstract void reset();
+        abstract String currentText();
+
+        void render(GuiGraphics g, int x) {
+            g.drawString(g.drawString(null, label, x, y, 0xFFFFFF) == null ? this.font() : this.font(), "", 0, 0, 0);
+            g.drawString(this.font(), label, x, y, 0xFFFFFF);
+            g.drawCenteredString(this.font(), currentText(), x + 132, y, 0xCCCCCC);
+        }
+
+        net.minecraft.client.gui.Font font() { return net.minecraft.client.Minecraft.getInstance().font; }
+    }
+
+    private static class NumRow extends Row {
+        final double min, max, step;
+        Button minus, plus;
+
+        NumRow(ForgeConfigSpec.ConfigValue<?> value, String label, double min, double max, double step, Object defaultValue) {
+            super(value, label, defaultValue);
+            this.min = min;
+            this.max = max;
+            this.step = step;
+        }
+
+        @Override
+        void build(ConfigScreen screen, int left, int right) {
+            minus = Button.builder(Component.literal("-"), b -> adjust(-step))
+                    .bounds(left, y, 20, 20).build();
+            plus = Button.builder(Component.literal("+"), b -> adjust(step))
+                    .bounds(right - 20, y, 20, 20).build();
+            screen.addRenderableWidget(minus);
+            screen.addRenderableWidget(plus);
+        }
+
+        void adjust(double delta) {
+            if (value instanceof ForgeConfigSpec.IntValue iv) {
+                int nv = (int) Math.max(min, Math.min(max, iv.get() + (delta > 0 ? step : -step)));
+                iv.set(nv);
+            } else if (value instanceof ForgeConfigSpec.DoubleValue dv) {
+                double nv = Math.max(min, Math.min(max, Math.round((dv.get() + delta) * 100.0) / 100.0));
+                dv.set(nv);
+            }
+        }
+
+        @Override
+        void reset() {
+            if (value instanceof ForgeConfigSpec.IntValue iv) iv.set((Integer) defaultValue);
+            else if (value instanceof ForgeConfigSpec.DoubleValue dv) dv.set(((Number) defaultValue).doubleValue());
+        }
+
+        @Override
+        String currentText() {
+            return value instanceof ForgeConfigSpec.IntValue iv ? String.valueOf(iv.get())
+                    : String.valueOf(Math.round(((ForgeConfigSpec.DoubleValue) value).get() * 100.0) / 100.0);
+        }
+    }
+
+    private static class BoolRow extends Row {
+        Button toggle;
+
+        BoolRow(ForgeConfigSpec.ConfigValue<?> value, String label, boolean defaultValue) {
+            super(value, label, defaultValue);
+        }
+
+        @Override
+        void build(ConfigScreen screen, int left, int right) {
+            toggle = Button.builder(Component.literal(currentText()), b -> {
+                ((ForgeConfigSpec.BooleanValue) value).set(!((ForgeConfigSpec.BooleanValue) value).get());
+                b.setMessage(Component.literal(currentText()));
+            }).bounds(right - 60, y, 60, 20).build();
+            screen.addRenderableWidget(toggle);
+        }
+
+        @Override
+        void reset() {
+            ((ForgeConfigSpec.BooleanValue) value).set((Boolean) defaultValue);
+        }
+
+        @Override
+        String currentText() {
+            return ((ForgeConfigSpec.BooleanValue) value).get() ? "开" : "关";
+        }
+    }
+}
+```
+
+> 注：若 `Row.render` 里那行冗余的 `g.drawString(...) == null ? this.font() : this.font()` 编译报错，直接删除那一行（仅保留下面两行 `g.drawString`/`g.drawCenteredString`）。
+
+- [ ] **Step 2: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 7: ClientEvents 集成（按键 + tick 瞄准 + 渲染接线）
+
+**Files:**
+- Create: `src/main/java/com/autoaim/client/ClientEvents.java`
+- Modify: `src/main/java/com/autoaim/AutoAimMod.java`
+
+**Interfaces:**
+- Consumes: `KeyBindings`、`TargetManager`、`Config`、`AimController`、`ProjectileSpecsProvider`、`EspRenderer`、`ConfigScreen`
+- Produces: 完整的客户端事件接线
+
+- [ ] **Step 1: 实现 ClientEvents.java**
+
+`src/main/java/com/autoaim/client/ClientEvents.java`：
+
+```java
+package com.autoaim.client;
+
+import com.autoaim.AutoAimMod;
+import com.autoaim.Config;
+import com.autoaim.client.gui.ConfigScreen;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+import net.minecraftforge.client.event.RenderLevelStageEvent;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
+
+@Mod.EventBusSubscriber(modid = AutoAimMod.MODID, value = Dist.CLIENT)
+public final class ClientEvents {
+    private ClientEvents() {}
+
+    @SubscribeEvent
+    public static void onKeyMappings(RegisterKeyMappingsEvent event) {
+        KeyBindings.registerAll(event);
+    }
+
+    @SubscribeEvent
+    public static void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) return;
+
+        while (KeyBindings.TOGGLE_DISPLAY.consumeClick()) TargetManager.toggleDisplay();
+        while (KeyBindings.LOCK.consumeClick()) TargetManager.toggleLock();
+        while (KeyBindings.UNLOCK.consumeClick()) TargetManager.unlock();
+        while (KeyBindings.OPEN_CONFIG.consumeClick()) mc.setScreen(new ConfigScreen());
+
+        TargetManager.tick();
+
+        if (mc.screen == null && !mc.isPaused() && !mc.player.isSpectator() && !mc.player.isDeadOrDying()) {
+            aim(mc.player);
+        }
+    }
+
+    private static void aim(LocalPlayer player) {
+        Entity target = TargetManager.getLockedTarget();
+        if (target == null || !target.isAlive()) return;
+
+        AimController.V3 eye = toV3(player.getEyePosition(1.0F));
+        AimController.V3 targetCenter = toV3(target.position().add(0, target.getBbHeight() * 0.5, 0));
+        AimController.ProjectileSpecs specs = ProjectileSpecsProvider.specsFor(player.getMainHandItem(), player);
+
+        AimController.LookAngles want;
+        if (specs == null) {
+            want = AimController.lookAt(eye, targetCenter);
+        } else {
+            Vec3 vel = target.getDeltaMovement();
+            var opt = AimController.solveLaunch(eye, targetCenter, toV3(vel), specs);
+            if (opt.isEmpty()) return;
+            want = opt.get();
+        }
+
+        float yawDiff = AimController.wrapDegrees(want.yaw() - player.getYRot());
+        float pitchDiff = AimController.wrapDegrees(want.pitch() - player.getXRot());
+        float speed = (float) Config.aimSpeed;
+        player.turn(yawDiff * speed, pitchDiff * speed);
+        player.setYHeadRot(player.getYRot());
+        player.yBodyRot = player.getYRot();
+    }
+
+    @SubscribeEvent
+    public static void onRenderLevel(RenderLevelStageEvent event) {
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_ENTITIES) return;
+        EspRenderer.render(event);
+    }
+
+    static AimController.V3 toV3(Vec3 v) {
+        return new AimController.V3(v.x, v.y, v.z);
+    }
+}
+```
+
+- [ ] **Step 2: 修改 AutoAimMod 注册配置界面入口**
+
+将 `AutoAimMod.java` 的构造函数体替换为：
+
+```java
+    public AutoAimMod(FMLJavaModLoadingContext context) {
+        IEventBus modEventBus = context.getModEventBus();
+        MinecraftForge.EVENT_BUS.register(this);
+        context.registerConfig(ModConfig.Type.CLIENT, Config.SPEC);
+        modEventBus.register(Config.class);
+        // 让模组列表里的「配置」按钮也打开同一配置界面（1.20.1 用 ModLoadingContext + ExtensionPoint）
+        ModLoadingContext.get().registerExtensionPoint(IConfigScreenFactory.class,
+                () -> new ConfigScreenHandler.ConfigScreenFactory((mc, parent) -> new com.autoaim.client.gui.ConfigScreen(parent)));
+    }
+```
+
+并在 import 区追加：
+
+```java
+import net.minecraftforge.client.ConfigScreenHandler;
+import net.minecraftforge.client.gui.IConfigScreenFactory;
+import net.minecraftforge.fml.ModLoadingContext;
+```
+
+> 注：`IConfigScreenFactory`/`ExtensionPoint` 在 1.20.1 属标准 FML API。若此步编译失败（类名/位置不符），删掉这 3 行并删除注册语句即可——O 键弹窗路径不受影响（fallback）。
+
+- [ ] **Step 3: Checkpoint — 编译通过**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew compileJava --console=plain -q
+```
+Expected: `BUILD SUCCESSFUL`。
+
+---
+
+### Task 8: 语言文件与收尾
+
+**Files:**
+- Create: `src/main/resources/assets/auto-aim/lang/en_us.json`
+- Create: `src/main/resources/assets/auto-aim/lang/zh_cn.json`
+
+- [ ] **Step 1: 创建 en_us.json**
+
+```json
+{
+  "key.categories.autoaim": "Auto-Aim",
+  "key.autoaim.toggle_display": "Toggle ESP Display",
+  "key.autoaim.lock": "Lock Target",
+  "key.autoaim.unlock": "Cancel Lock",
+  "key.autoaim.open_config": "Open Config"
+}
+```
+
+- [ ] **Step 2: 创建 zh_cn.json**
+
+```json
+{
+  "key.categories.autoaim": "自动瞄准",
+  "key.autoaim.toggle_display": "显示周围生物",
+  "key.autoaim.lock": "锁定目标",
+  "key.autoaim.unlock": "取消锁定",
+  "key.autoaim.open_config": "打开配置界面"
+}
+```
+
+- [ ] **Step 3: Checkpoint — 完整构建（含测试与打包）**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && ./gradlew clean build --console=plain
+```
+Expected: `BUILD SUCCESSFUL`；`build/libs/auto-aim-1.0.0.jar` 已生成。
+
+---
+
+### Task 9: 冒烟验证与交付
+
+- [ ] **Step 1: 确认产物**
+
+```bash
+ls -la "D:\mcmod\auto-aim\auto-aim\build\libs"
+```
+Expected: 存在 `auto-aim-1.0.0.jar`。
+
+- [ ] **Step 2: 校验 jar 内容**
+
+```bash
+cd "D:\mcmod\auto-aim\auto-aim" && unzip -l build/libs/auto-aim-1.0.0.jar | grep -E "com/autoaim|mods.toml|lang" | head -30
+```
+Expected: 列出 `com/autoaim/*.class`、`META-INF/mods.toml`、`assets/auto-aim/lang/*.json`。
+
+- [ ] **Step 3: 人工实测清单（交付给用户，需进游戏验证）**
+
+1. 按 `H` 显示/隐藏周围生物黄色框线；`O` 调整显示范围。
+2. 准星对准一个生物按 `K` → 视角平滑转向并持续跟随（红色框）。
+3. 再按 `K` 或按 `L` 取消锁定；目标死亡/跑远自动解锁。
+4. 手持弓按 `K` 锁定 → 出现青色弹道弧线且随视角/拉弓变化，视角自动抬到命中仰角；满弓松手 → 箭命中。
+5. 手持三叉戟/弩同样生效。
+6. `O` 弹出配置界面：改值即时生效，「保存」「恢复默认」「关闭」工作正常。
+
+- [ ] **Step 4: 结果汇报**
+
+向用户报告：jar 路径、各功能实测项、已知限制（如药水弹道参数为近似值、`targetHostilesOnly` 用 `Monster` 子类近似）。

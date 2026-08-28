@@ -1,0 +1,7 @@
+{
+  "key.categories.autoaim": "自动瞄准",
+  "key.autoaim.toggle_display": "显示周围生物",
+  "key.autoaim.lock": "锁定目标",
+  "key.autoaim.unlock": "取消锁定",
+  "key.autoaim.open_config": "打开配置界面"
+}
