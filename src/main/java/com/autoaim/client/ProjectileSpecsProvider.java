@@ -22,7 +22,8 @@ public final class ProjectileSpecsProvider {
             // 满弓 3.0；拉弓中按当前进度实时换算（与原版 BowItem.getPowerForTime 一致）
             double power = 1.0;
             if (player.isUsingItem() && player.getUseItem() == stack) {
-                int useTicks = stack.getUseDuration() - player.getUseItemRemainingTicks();
+                // 1.20.5+ 起 ItemStack#getUseDuration 需要传入使用者
+                int useTicks = stack.getUseDuration(player) - player.getUseItemRemainingTicks();
                 power = BowItem.getPowerForTime(useTicks);
             }
             return new AimController.ProjectileSpecs(power * 3.0, 0.05, 0.99);

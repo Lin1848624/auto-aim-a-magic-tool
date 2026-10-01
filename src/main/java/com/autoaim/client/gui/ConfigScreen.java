@@ -7,7 +7,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraftforge.common.ForgeConfigSpec;
+import net.neoforged.neoforge.common.ModConfigSpec;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
@@ -59,10 +59,10 @@ public class ConfigScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mx, int my, float partialTick) {
-        this.renderBackground(g);
+        // 1.21.1 的 Screen#render 内部会调用 renderBackground(g, mx, my, partialTick)
+        super.render(g, mx, my, partialTick);
         g.drawCenteredString(this.font, this.title, this.width / 2, 8, 0xFFFFFF);
         for (Row r : rows) r.render(g, this.font, this.width / 2 - 138);
-        super.render(g, mx, my, partialTick);
     }
 
     @Override
@@ -78,12 +78,12 @@ public class ConfigScreen extends Screen {
     public boolean isPauseScreen() { return false; }
 
     private abstract static class Row {
-        final ForgeConfigSpec.ConfigValue<?> value;
+        final ModConfigSpec.ConfigValue<?> value;
         final String label;
         final Object defaultValue;
         int y;
 
-        Row(ForgeConfigSpec.ConfigValue<?> value, String label, Object defaultValue) {
+        Row(ModConfigSpec.ConfigValue<?> value, String label, Object defaultValue) {
             this.value = value;
             this.label = label;
             this.defaultValue = defaultValue;
@@ -106,7 +106,7 @@ public class ConfigScreen extends Screen {
         final double min, max;
         EditBox box;
 
-        NumRow(ForgeConfigSpec.ConfigValue<?> value, String label, double min, double max, Object defaultValue) {
+        NumRow(ModConfigSpec.ConfigValue<?> value, String label, double min, double max, Object defaultValue) {
             super(value, label, defaultValue);
             this.min = min;
             this.max = max;
@@ -132,13 +132,13 @@ public class ConfigScreen extends Screen {
         }
 
         double currentValue() {
-            return value instanceof ForgeConfigSpec.IntValue iv ? iv.get()
-                    : ((ForgeConfigSpec.DoubleValue) value).get();
+            return value instanceof ModConfigSpec.IntValue iv ? iv.get()
+                    : ((ModConfigSpec.DoubleValue) value).get();
         }
 
         String textOfCurrent() {
-            return value instanceof ForgeConfigSpec.IntValue iv ? String.valueOf(iv.get())
-                    : String.valueOf(Math.round(((ForgeConfigSpec.DoubleValue) value).get() * 100.0) / 100.0);
+            return value instanceof ModConfigSpec.IntValue iv ? String.valueOf(iv.get())
+                    : String.valueOf(Math.round(((ModConfigSpec.DoubleValue) value).get() * 100.0) / 100.0);
         }
 
         /** 解析输入框内容并写入配置，非法输入则回显当前值。 */
@@ -148,8 +148,8 @@ public class ConfigScreen extends Screen {
             if (s.isEmpty()) { box.setValue(textOfCurrent()); return; }
             try {
                 double nv = Math.max(min, Math.min(max, Double.parseDouble(s)));
-                if (value instanceof ForgeConfigSpec.IntValue iv) iv.set((int) Math.round(nv));
-                else if (value instanceof ForgeConfigSpec.DoubleValue dv) dv.set(Math.round(nv * 100.0) / 100.0);
+                if (value instanceof ModConfigSpec.IntValue iv) iv.set((int) Math.round(nv));
+                else if (value instanceof ModConfigSpec.DoubleValue dv) dv.set(Math.round(nv * 100.0) / 100.0);
                 box.setValue(textOfCurrent());
                 Config.refresh();
                 Config.save();
@@ -160,8 +160,8 @@ public class ConfigScreen extends Screen {
 
         @Override
         void reset() {
-            if (value instanceof ForgeConfigSpec.IntValue iv) iv.set((Integer) defaultValue);
-            else if (value instanceof ForgeConfigSpec.DoubleValue dv) dv.set(((Number) defaultValue).doubleValue());
+            if (value instanceof ModConfigSpec.IntValue iv) iv.set((Integer) defaultValue);
+            else if (value instanceof ModConfigSpec.DoubleValue dv) dv.set(((Number) defaultValue).doubleValue());
             box.setValue(textOfCurrent());
         }
     }
@@ -170,14 +170,14 @@ public class ConfigScreen extends Screen {
     private static class BoolRow extends Row {
         Button toggle;
 
-        BoolRow(ForgeConfigSpec.ConfigValue<?> value, String label, boolean defaultValue) {
+        BoolRow(ModConfigSpec.ConfigValue<?> value, String label, boolean defaultValue) {
             super(value, label, defaultValue);
         }
 
         @Override
         void build(ConfigScreen screen, int left, int right) {
             toggle = Button.builder(Component.literal(currentText()), b -> {
-                ((ForgeConfigSpec.BooleanValue) value).set(!((ForgeConfigSpec.BooleanValue) value).get());
+                ((ModConfigSpec.BooleanValue) value).set(!((ModConfigSpec.BooleanValue) value).get());
                 b.setMessage(Component.literal(currentText()));
                 Config.refresh();
                 Config.save();
@@ -187,12 +187,12 @@ public class ConfigScreen extends Screen {
 
         @Override
         void reset() {
-            ((ForgeConfigSpec.BooleanValue) value).set((Boolean) defaultValue);
+            ((ModConfigSpec.BooleanValue) value).set((Boolean) defaultValue);
             toggle.setMessage(Component.literal(currentText()));
         }
 
         String currentText() {
-            return ((ForgeConfigSpec.BooleanValue) value).get() ? "开" : "关";
+            return ((ModConfigSpec.BooleanValue) value).get() ? "开" : "关";
         }
     }
 }

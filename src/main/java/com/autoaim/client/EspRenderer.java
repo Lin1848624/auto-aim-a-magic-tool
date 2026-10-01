@@ -3,6 +3,7 @@ package com.autoaim.client;
 import com.autoaim.Config;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.Tesselator;
@@ -16,7 +17,7 @@ import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import org.joml.Matrix4f;
 
 import java.util.List;
@@ -39,7 +40,8 @@ public final class EspRenderer {
         Camera camera = event.getCamera();
         Vec3 camPos = camera.getPosition();
         PoseStack poseStack = event.getPoseStack();
-        float partialTick = event.getPartialTick();
+        // 1.21.1 的 RenderLevelStageEvent#getPartialTick 返回 DeltaTracker
+        float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(false);
 
         if (TargetManager.isDisplayEnabled()) {
             double range = Config.displayRange;
@@ -78,19 +80,20 @@ public final class EspRenderer {
         poseStack.popPose();
     }
 
+    /** 1.21.1 的缓冲区 API：Tesselator#begin + BufferBuilder#addVertex + BufferUploader#drawWithShader。 */
     private static void drawPolyline(Matrix4f mat, List<AimController.V3> pts, float r, float g, float b, float a) {
         if (pts.size() < 2) return;
         RenderSystem.disableDepthTest();
         RenderSystem.setShader(GameRenderer::getPositionColorShader);
-        BufferBuilder builder = Tesselator.getInstance().getBuilder();
-        builder.begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
+        BufferBuilder builder = Tesselator.getInstance()
+                .begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
         for (int i = 0; i < pts.size() - 1; i++) {
             AimController.V3 p = pts.get(i);
             AimController.V3 q = pts.get(i + 1);
-            builder.vertex(mat, (float) p.x(), (float) p.y(), (float) p.z()).color(r, g, b, a).endVertex();
-            builder.vertex(mat, (float) q.x(), (float) q.y(), (float) q.z()).color(r, g, b, a).endVertex();
+            builder.addVertex(mat, (float) p.x(), (float) p.y(), (float) p.z()).setColor(r, g, b, a);
+            builder.addVertex(mat, (float) q.x(), (float) q.y(), (float) q.z()).setColor(r, g, b, a);
         }
-        Tesselator.getInstance().end();
+        BufferUploader.drawWithShader(builder.buildOrThrow());
         RenderSystem.enableDepthTest();
     }
 

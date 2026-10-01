@@ -1,7 +1,8 @@
 # 自动瞄准模组（Auto-Aim）设计文档
 
 日期：2026-08-26
-目标环境：Minecraft Forge 1.20.1 / 47.4.22，纯客户端模组
+目标环境：Minecraft NeoForge 1.21.1 / 21.1.252，纯客户端模组
+（2026-10-01 由 Forge 1.20.1 适配到 NeoForge 1.21.1，详见第 10 节；1.20.1 版本见 git 历史）
 项目目录：`D:\mcmod\auto-aim\auto-aim`（产物 jar 也保存在此）
 
 ## 1. 需求
@@ -22,8 +23,8 @@
 
 ```
 src/main/java/com/autoaim/
-├── AutoAimMod.java            # @Mod("auto-aim")，注册配置/事件/按键
-├── Config.java                # ForgeConfigSpec（CLIENT）+ 缓存字段 + 重载监听
+├── AutoAimMod.java            # @Mod(value="autoaim", dist=CLIENT)，注册配置与配置界面扩展点
+├── Config.java                # ModConfigSpec（CLIENT）+ 缓存字段 + 重载监听
 └── client/
     ├── KeyBindings.java       # 4 个按键注册
     ├── TargetManager.java     # 候选扫描/筛选/锁定状态机
@@ -32,7 +33,7 @@ src/main/java/com/autoaim/
     └── gui/ConfigScreen.java  # 自建简易配置界面
 src/test/java/com/autoaim/client/AimControllerTest.java   # JUnit 单测
 src/main/resources/
-├── META-INF/mods.toml         # clientSideOnly=true
+├── META-INF/neoforge.mods.toml # NeoForge 1.21.1 元数据（无 clientSideOnly，改用入口点 dist=CLIENT）
 ├── pack.mcmeta
 └── assets/auto-aim/lang/en_us.json, zh_cn.json
 ```
@@ -41,7 +42,7 @@ src/main/resources/
 - `ExampleMod.MODID` 由 `examplemod` 修正为 `auto-aim`（与 `gradle.properties` 的 `mod_id` 一致，否则模组无法加载）。
 - 删除 examplemod 示例代码（示例方块/物品/创造标签页/日志）。
 - 包名改为 `com.autoaim`。
-- `mods.toml` 设 `clientSideOnly=true`（服务器端不加载，displayTest 自动为 IGNORE_ALL_VERSION）。
+- 纯客户端：入口点用 `@Mod(dist = Dist.CLIENT)` 限定，专用服务器上不会构造主类（1.21.1 已移除 `clientSideOnly`/`displayTest`）。
 
 ## 3. 按键绑定（KeyMapping，可在游戏内按键设置修改）
 
@@ -149,7 +150,8 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 
 ## 8. 构建与测试
 
-- 构建：`./gradlew build`（JDK17，见 gradle.properties 的 `org.gradle.java.home`），jar 产出到 `build/libs`。
+- 构建：`./gradlew build`（Java 21，见 gradle.properties 的 `org.gradle.java.home`），jar 产出到 `build/libs`。
+- 构建插件：NeoForge 官方 ModDevGradle 2.0.148（`net.neoforged.moddev`）+ Gradle 8.14；首次构建会下载 MC 1.21.1/NeoForge 并运行 NeoForm 生成开发工件（约 3~7 分钟，之后走缓存）。
 - **单元测试**：`AimControllerTest` 覆盖：
   - 静态目标命中角（已知距离/弹速 → 期望 pitch 在容差内）；
   - 移动目标提前量（水平跑动目标 → yaw 超前）；
@@ -164,3 +166,45 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 - 不自动攻击/自动开火（只负责把准心对准、显示弹道）。
 - 不做目标速度预测之外的提前量高级模型（如风向、多跳）。
 - 不引第三方库（Cloth Config 等）。
+
+## 10. NeoForge 1.21.1 适配记录（2026-10-01）
+
+### 10.1 构建体系
+
+| 项目 | Forge 1.20.1（原） | NeoForge 1.21.1（现） |
+|------|--------------------|------------------------|
+| 构建插件 | ForgeGradle 6 `net.minecraftforge.gradle` | ModDevGradle 2.0.148 `net.neoforged.moddev` |
+| Gradle | 8.7 | 8.14（腾讯云镜像分发） |
+| Java | 17 | 21（`D:/App/zulu21.52.15-ca-jdk21.0.12-win_x64`） |
+| 映射 | `mapping_channel=official` + `mapping_version` | ModDevGradle 内置官方映射，无需配置 |
+| 元数据 | `META-INF/mods.toml` | `META-INF/neoforge.mods.toml`（`mandatory=true` → `type="required"`） |
+| 资源包格式 | `pack_format` 15 | `pack_format` 34 |
+| 运行配置 | runClient/runServer/runData/runGameTestServer | client/server/data（`.idea/runConfigurations` 下旧的 ForgeGradle 配置已删除，IDEA 重新同步 Gradle 后会生成新的） |
+| 模组版本 | `1.0.0` | `1.1.0`（NeoForge 1.21.1 线单独编号，jar 名 `autoaim-1.1.0.jar`） |
+
+### 10.2 源码改动
+
+| 文件 | 改动要点 |
+|------|----------|
+| `AutoAimMod` | 包名 `net.minecraftforge.*` → `net.neoforged.*`；构造器改为注入 `ModContainer`（1.21.1 支持注入 IEventBus / ModContainer / FMLModContainer / Dist）；`@Mod(dist = Dist.CLIENT)` 取代 `clientSideOnly=true`，专用服务器不会构造主类；配置界面扩展点改用 `IConfigScreenFactory`，其方法签名为 `createScreen(ModContainer, Screen)` |
+| `Config` | `ForgeConfigSpec` → `ModConfigSpec`（`net.neoforged.neoforge.common`）；事件改为 `net.neoforged.fml.event.config.ModConfigEvent`；新增 `event.getConfig().getSpec() != SPEC` 过滤，避免误刷新其他配置 |
+| `ClientEvents` | `TickEvent.ClientTickEvent(Phase.END)` → `ClientTickEvent.Post`；渲染事件 → `net.neoforged.neoforge.client.event.RenderLevelStageEvent` |
+| `Config` / `ClientModEvents` | `@EventBusSubscriber(bus = Bus.MOD)` 在 1.21.1 已弃用：框架会按事件类型（`IModBusEvent`）自动选择总线，因此去掉 `bus` 参数 |
+| `EspRenderer` | `event.getPartialTick()` 由 `float` 变为 `DeltaTracker`，改为 `getGameTimeDeltaPartialTick(false)`；顶点缓冲 API 由 `Tesselator#getBuilder + begin + endVertex + end()` 改为 `Tesselator#begin + addVertex + setColor + buildOrThrow + BufferUploader#drawWithShader` |
+| `ProjectileSpecsProvider` | `ItemStack#getUseDuration()` → `getUseDuration(player)`（1.20.5 起的变更） |
+| `ConfigScreen` | `Screen#renderBackground(GuiGraphics)` 已移除：改由 `super.render(...)` 内部调用 `renderBackground(g, mx, my, partialTick)`；`ForgeConfigSpec.*` → `ModConfigSpec.*` |
+| `AimController` / `TargetManager` / `KeyBindings` / lang | 逻辑无需改动，仅按键注册事件换包名 |
+
+### 10.3 环境注意事项
+
+- 本机访问 `maven.neoforged.net` 时 **IPv4 会被连接重置（Connection reset），只有 IPv6 可用**。已在用户级环境变量设置
+  `JAVA_TOOL_OPTIONS=-Djava.net.preferIPv6Addresses=true`，使 Gradle 守护进程、NeoForm Runtime 等所有 JVM 优先走 IPv6。
+  缺少该变量时，首次构建会在解析 `net.neoforged:neoform-runtime` 时失败。撤销方式：删除该用户环境变量。
+- Gradle 发行版改用腾讯云镜像（`services.gradle.org` 直连超时），见 `gradle/wrapper/gradle-wrapper.properties`。
+- `~/.gradle/init.gradle` 会清空项目的插件仓库，因此 `settings.gradle` 里额外补了一次 NeoForged 仓库注册（否则离线/受限网络下插件解析可能失败）。
+
+### 10.4 验证情况
+
+- `gradlew build` 通过：编译无警告、JUnit `AimControllerTest` 8 个用例全部通过、产出 `build/libs/autoaim-1.1.0.jar`。
+- jar 内 `META-INF/neoforge.mods.toml` 占位符全部展开正确（含中文描述，使用 `\uXXXX` 转义避免 properties 编码问题）、`pack.mcmeta` 为 `pack_format 34`。
+- 游戏内实际运行（进入世界、按 K 锁定、ESP 轮廓、弹道弧线、配置界面与模组列表「配置」按钮）需由用户启动客户端实测。

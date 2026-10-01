@@ -1,0 +1,29 @@
+# NeoForge 1.21.1 模组元数据文件（替代 Forge 1.20.1 的 META-INF/mods.toml）
+# 格式参考：https://docs.neoforged.net/docs/gettingstarted/modfiles/
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+#issueTrackerURL="https://change.me.to.your.issue.tracker.example.invalid/" #optional
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+# 纯客户端模组：入口点用 @Mod(dist = Dist.CLIENT) 限定在物理客户端加载
+description='''${mod_description}'''
+
+[[dependencies.${mod_id}]]
+modId="neoforge"
+# 'required' 表示缺少该依赖时游戏无法加载；可选值 required / optional / incompatible / discouraged
+type="required"
+versionRange="${neo_version_range}"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.${mod_id}]]
+modId="minecraft"
+type="required"
+versionRange="${minecraft_version_range}"
+ordering="NONE"
+side="BOTH"
