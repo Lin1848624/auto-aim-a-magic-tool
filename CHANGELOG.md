@@ -3,7 +3,8 @@
 All notable changes to **Auto Aim: A Magic Tool** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> Version lines are split by mod loader / Minecraft version: `1.0.x` = Minecraft Forge 1.20.1, `1.1.x` = NeoForge 1.21.1.
+> Version lines are split by mod loader / Minecraft version: `1.0.x` = Minecraft Forge 1.20.1, `1.1.x` = NeoForge 1.21.1,
+> `1.2.0-1.20.1` = the Forge 1.20.1 build of the `1.2.0` feature release (branch `1.20.1`, which also keeps its own `CHANGELOG.md`).
 
 ---
 
@@ -46,6 +47,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - 旧配置可直接沿用：`lockPart` 默认 `CENTER`，不切换时行为与 1.1.0 完全一致。
 - 头部瞄准点只是一个坐标，不依赖 TaCZ 的任何 API，所以对其他枪械模组同样有效；原版弓/弩的弹道模式也会改为瞄准头部。
+
+---
+
+## [1.2.0-1.20.1] - 2026-10-27
+
+> Minecraft **Forge 1.20.1** build of the `1.2.0` feature release (branch `1.20.1`): same behaviour, built for Forge 47.x / Java 17.
+
+### English
+
+**Added**
+
+- Head-lock mode (`lockPart` / `headOffset`) and the `J` toggle, ported to Forge 1.20.1. Behaviour details are identical to the `1.2.0` entry above.
+
+**Fixed**
+
+- The mod description no longer shows mojibake in the mod list (`gradle.properties` is parsed as ISO-8859-1, so the text now uses `\uXXXX` escapes).
+
+**Notes**
+
+- Configurations from `1.0.0` keep working: `lockPart` defaults to `CENTER`.
+- This jar only runs on Minecraft 1.20.1 + Forge 47.x; the NeoForge 1.21.1 build is `1.2.0`.
+
+### 中文
+
+**新增**
+
+- 头部锁定模式（`lockPart` / `headOffset`）与 `J` 键切换移植到 Forge 1.20.1，行为细节与上面的 `1.2.0` 条目完全一致。
+
+**修复**
+
+- 模组列表里的中文描述不再乱码（`gradle.properties` 按 ISO-8859-1 解析，改为 `\uXXXX` 转义）。
+
+**说明**
+
+- `1.0.0` 的旧配置可直接沿用：`lockPart` 默认 `CENTER`。
+- 本 jar 只适用于 Minecraft 1.20.1 + Forge 47.x；NeoForge 1.21.1 请用 `1.2.0`。
 
 ---
 
@@ -138,5 +175,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ---
 
 [1.2.0]: https://github.com/Lin1848624/auto-aim-a-magic-tool/releases/tag/v1.2.0
+[1.2.0-1.20.1]: https://github.com/Lin1848624/auto-aim-a-magic-tool/releases/tag/v1.2.0-1.20.1
 [1.1.0]: https://github.com/Lin1848624/auto-aim-a-magic-tool/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Lin1848624/auto-aim-a-magic-tool/releases/tag/release
