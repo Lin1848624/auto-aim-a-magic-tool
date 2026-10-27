@@ -15,6 +15,8 @@
    - 按主手武器自动切换模式；
    - 自动瞄准包含重力与提前量求解；
    - 实时显示预测弹道弧线（随发射角/拉弓进度变化）。
+7. 头部锁定模式（1.2.0-1.20.1）：配置界面 / `J` 键切换「锁定部位」，把瞄准点从碰撞箱中心改为头部（眼睛高度），
+   以便在枪械模组（如 TaCZ 永恒枪械工坊：零）中打出爆头额外伤害。
 
 ## 2. 架构总览
 
@@ -25,9 +27,10 @@ src/main/java/com/autoaim/
 ├── AutoAimMod.java            # @Mod("auto-aim")，注册配置/事件/按键
 ├── Config.java                # ForgeConfigSpec（CLIENT）+ 缓存字段 + 重载监听
 └── client/
-    ├── KeyBindings.java       # 4 个按键注册
-    ├── TargetManager.java     # 候选扫描/筛选/锁定状态机
-    ├── AimController.java     # 纯数学：命中角、弹道求解、轨迹点列（可单测）
+    ├── KeyBindings.java       # 5 个按键注册
+    ├── TargetManager.java     # 候选扫描/筛选/锁定状态机 + 瞄准点计算
+    ├── LockPart.java          # 锁定部位枚举：身体中心 / 头部（无 Minecraft 依赖）
+    ├── AimController.java     # 纯数学：命中角、瞄准点高度、弹道求解、轨迹点列（可单测）
     ├── EspRenderer.java       # ESP 框线 + 弹道弧线渲染
     └── gui/ConfigScreen.java  # 自建简易配置界面
 src/test/java/com/autoaim/client/AimControllerTest.java   # JUnit 单测
@@ -50,6 +53,7 @@ src/main/resources/
 | 显示周围生物 | `H` | 切换 ESP 框线显示 |
 | 锁定目标 | `K` | 锁定准星最近生物；再按一次取消 |
 | 取消锁定 | `L` | 清除当前锁定 |
+| 切换锁定部位 | `J` | 在「身体中心 / 头部」间切换，准星下方提示当前模式 |
 | 打开配置界面 | `O` | 弹出配置界面 |
 
 按键分类名：`key.categories.autoaim`。
@@ -59,10 +63,12 @@ src/main/resources/
 - **候选扫描**：客户端 tick 中（每 5 tick 节流），用 `level.getEntitiesOfClass(LivingEntity.class, AABB 范围)` 收集。
 - **筛选**：存活、非玩家（除非 `includePlayers=true`）、非观战；可选 `targetHostilesOnly=true` 只取敌对生物。敌对判定启发式：`entity instanceof net.minecraft.world.entity.monster.Monster`（覆盖僵尸/骷髅/苦力怕/末影人/猪灵/凋灵等常见敌对生物；不含史莱姆、末影龙等，作为近似实现，后续可按需扩展）。
 - **锁定规则（准星指向锁定）**：按 `K` →
-  1. 对每个候选计算「玩家视线方向」与「指向该生物方向」的夹角，取最小夹角者；
+  1. 对每个候选计算「玩家视线方向」与「指向该生物瞄准点方向」的夹角，取最小夹角者；
   2. 若最小夹角 < `lockAngle`（默认 15°），锁定该生物；
   3. 否则锁定范围内距离最近的生物。
   - 再次按 `K` → 取消锁定（切换式）。
+- 瞄准点（`TargetManager#aimPointOf`）与自动瞄准共用：`x/z` 取碰撞箱中心，`y` 由「锁定部位」决定（见第 10 节），
+  保证「瞄到的」就是「锁到的」。
 - **自动解除**：目标死亡/移除、与玩家距离 > `lockRange × 1.5`、玩家死亡、切世界。
 - 锁定目标实体引用存在 `TargetManager`，供渲染与瞄准读取。
 
@@ -77,6 +83,8 @@ record LookAngles(float yaw, float pitch)
 
 - `forItem(ItemStack) → ProjectileSpecs | null`：主手武器 → 弹道参数；非弹道武器返回 `null`（普通模式）。
 - `lookAt(eye, target) → LookAngles`：普通命中角（`atan2(dz,dx)-90`、`-atan2(dy,horiz)`）。
+- `aimHeightOffset(bbHeight, eyeHeight, part, headOffset) → double`：瞄准点离脚底的高度（身体中心 / 头部，见第 10 节）。
+- `aimPoint(feetCenter, bbHeight, eyeHeight, part, headOffset) → V3`：瞄准点世界坐标（`x/z` 沿用碰撞箱中心）。
 - `solveLaunch(eye, targetPos, targetVel, specs, maxFlightTime) → Optional<LookAngles>`：弹道求解。
 - `computeTrajectory(eye, yaw, pitch, specs, steps) → List<Vec3>`：世界坐标轨迹点列。
 
@@ -115,7 +123,8 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 ### tick 应用（ClientTickEvent.Post）
 
 锁定且条件满足（非观战、`mc.screen == null`、非暂停、玩家存活）时：
-1. `specs = forItem(mainHand)`；为 null → `lookAt`；否则 → `solveLaunch`（`targetVel = target.getDeltaMovement()`）。
+1. 瞄准点 = `TargetManager.aimPointOf(target)`（身体中心或头部，由配置决定）；
+   `specs = forItem(mainHand)`；为 null → `lookAt`；否则 → `solveLaunch`（`targetVel = target.getDeltaMovement()`）。
 2. 计算 `yawDiff = wrapDegrees(targetYaw − player.getYRot())`、`pitchDiff`，`player.turn(yawDiff × aimSpeed, pitchDiff × aimSpeed)` 平滑旋转。
 3. 同步 `player.yHeadRot` / `yBodyRot`。
 
@@ -128,14 +137,16 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 
 ## 7. 配置（Config.java + ConfigScreen）
 
-配置文件自动生成到 `config/auto-aim-client.toml`（注释友好、可手改）。
+配置文件自动生成到 `config/autoaim-client.toml`（注释友好、可手改）。
 
 | 配置项 | 类型 | 默认 | 范围 | 说明 |
 |--------|------|------|------|------|
 | displayRange | int | 24 | 8–128 | ESP 显示范围（格） |
 | lockRange | int | 24 | 8–128 | 锁定搜索范围（格） |
 | lockAngle | double | 15 | 1–60 | 准星容差角（度） |
-| aimSpeed | double | 0.25 | 0.02–1.0 | 自动瞄准平滑速度 |
+| aimSpeed | double | 1.0 | 0.02–1.0 | 自动瞄准平滑速度 |
+| lockPart | enum | CENTER | CENTER/HEAD | 锁定部位：身体中心 / 头部 |
+| headOffset | double | 0.0 | -0.3–0.3 | 头部瞄准点上下微调（格）；仅 HEAD 生效 |
 | targetHostilesOnly | bool | false | — | 仅锁定敌对生物 |
 | includePlayers | bool | false | — | 是否把玩家作为目标 |
 | showLockedTarget | bool | true | — | 锁定目标始终高亮 |
@@ -144,7 +155,9 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 （`maxFlightTime` 已按用户要求移出配置，内部固定 3.0 秒。）
 
 - `ModConfigEvent.Reloading`/`Loading` → 刷新缓存静态字段，改配置即时生效。
-- **配置界面**（`O` 键弹出）：简易 `Screen`，每行 = 名称 + 描述 + 当前值 + `-`/`+`（数字）或 `开/关`（布尔）按钮；底部「保存」「恢复默认」「关闭」。改动即时生效，关闭时 `config.save()` 写盘。
+- **配置界面**（`O` 键弹出）：简易 `Screen`，每行 = 名称 + 当前值控件；数值行用输入框（允许 `-` 号，供头部微调使用），
+  布尔行用 `开/关` 按钮，枚举行（锁定部位）用循环切换按钮；底部「恢复默认」「关闭」。改动即时生效，关闭时 `config.save()` 写盘。
+- 锁定部位还可以在游戏内按 `J` 直接切换（会同时写盘并在准星下方提示当前模式）。
 - 同时通过 `RegisterClientExtensionsEvent.registerConfigScreenHandler` 注册，使模组列表里的「配置」按钮也可打开同一界面。
 
 ## 8. 构建与测试
@@ -164,3 +177,42 @@ q(t) = (v0·t)² − |r_h(t)|² − (r_y(t) + ½·g·t²)² = 0
 - 不自动攻击/自动开火（只负责把准心对准、显示弹道）。
 - 不做目标速度预测之外的提前量高级模型（如风向、多跳）。
 - 不引第三方库（Cloth Config 等）。
+
+## 10. 头部锁定模式（2026-10-27，1.2.0-1.20.1）
+
+### 10.1 判定依据（核对过 TaCZ 源码，不是推测）
+
+TaCZ（永恒枪械工坊：零）的爆头判定在 `com.tacz.guns.util.EntityUtil`，核心逻辑：
+
+```java
+Vec3 hitBoxPos = hitPos.subtract(entity.position());              // 命中点相对实体脚底
+AABB aabb = HeadShotAABBConfigRead.getAABB(entityId);              // 同步配置里可按生物覆盖
+if (aabb != null) return new EntityKineticBullet.EntityResult(entity, hitPos, aabb.contains(hitBoxPos));
+float eyeHeight = entity.getEyeHeight();                           // 默认规则
+boolean headshot = (eyeHeight - 0.25) < hitBoxPos.y && hitBoxPos.y < (eyeHeight + 0.25);
+```
+
+- 官方 1.20.1 源码与 1.21.1 NeoForge 移植版规则一致；`HeadShotAABB` 默认是空列表，
+  因此默认全部走「眼睛高度 ±0.25 格」这条带。
+- **结论**：头部模式瞄准「脚底 + 眼睛高度」，正好是判定带的正中心，上下各留 0.25 格余量。
+  瞄准碰撞箱顶部反而会出界（例：末影人高 2.9 / 眼 2.55，箱顶 2.9 在带外）。
+- 子弹出生点在 `eyeY - 0.1`，所以实际命中点比瞄准点低约 0.1 格，仍在带内。
+
+### 10.2 实现
+
+- `LockPart`：`CENTER`（身体中心）/ `HEAD`（头部）两个模式，刻意不引用 Minecraft 类。
+- `AimController#aimHeightOffset`：`CENTER` → `bbHeight / 2`；`HEAD` → `eyeHeight + headOffset`，
+  并把结果收进 `[0.05, bbHeight - 0.05]`，避免正微调时瞄准点跑到箱顶之外、子弹擦着头顶飞过。
+- `TargetManager#aimPointOf`：把上述高度换算成世界坐标，自动瞄准与准星锁定选取共用同一点。
+- 配置项 `lockPart`（默认 `CENTER`）/ `headOffset`（默认 `0.0`），配置界面两行，`J` 键快捷切换并提示。
+- 旧配置兼容：不切换时行为与 1.0.0 完全一致。
+- 头部瞄准点只是坐标运算，不调用 TaCZ 的任何 API，所以对其他枪械模组、对原版弓/弩同样生效。
+
+### 10.3 游戏内验证要点（由用户实测）
+
+1. 进入游戏按 `O` 打开配置界面，把「锁定部位」切到「头部」（或直接按 `J`，准星下方会提示当前模式）。
+2. 按 `K` 锁定一只僵尸/骷髅，确认准心落在**头部**而不是腰部。
+3. 开枪，看命中反馈：TaCZ 的爆头准心/音效与普通命中不同，且伤害明显更高。
+4. 想直接看判定带：TaCZ 客户端配置 `config/tacz-client.toml` 里把 `HeadShotDebugHitbox` 改为 `true`，
+   再按 `F3 + B` 打开碰撞箱显示，生物头部会出现一个黄框——那个框就是爆头判定带。
+5. 再按 `J` 切回「身体中心」，行为应与 1.0.0 一致（瞄腰）。

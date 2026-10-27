@@ -11,3 +11,12 @@ pluginManagement {
 plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '0.7.0'
 }
+
+// 注意：本机 init.gradle 会在 settingsEvaluated 阶段清空 pluginManagement 仓库（换成阿里云镜像），
+// 而阿里云镜像里没有 ForgeGradle 插件，因此这里在该回调之后重新补上 MinecraftForge 仓库。
+gradle.settingsEvaluated { settings ->
+    settings.pluginManagement.repositories.maven {
+        name = 'MinecraftForge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
