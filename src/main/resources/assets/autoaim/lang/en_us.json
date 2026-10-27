@@ -3,5 +3,9 @@
   "key.autoaim.toggle_display": "Toggle ESP Display",
   "key.autoaim.lock": "Lock Target",
   "key.autoaim.unlock": "Cancel Lock",
-  "key.autoaim.open_config": "Open Config"
+  "key.autoaim.toggle_lock_part": "Toggle Lock Part (Body Center/Head)",
+  "key.autoaim.open_config": "Open Config",
+  "autoaim.lock_part.center": "Body center",
+  "autoaim.lock_part.head": "Head",
+  "autoaim.lock_part.toast": "Lock part: %s"
 }

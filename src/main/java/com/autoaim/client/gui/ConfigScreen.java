@@ -1,6 +1,7 @@
 package com.autoaim.client.gui;
 
 import com.autoaim.Config;
+import com.autoaim.client.LockPart;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -25,6 +26,8 @@ public class ConfigScreen extends Screen {
         rows.add(new NumRow(Config.LOCK_RANGE, "锁定范围（格）", 8, 128, 24));
         rows.add(new NumRow(Config.LOCK_ANGLE, "准星容差角（度）", 1, 60, 15.0));
         rows.add(new NumRow(Config.AIM_SPEED, "瞄准速度（1=立即）", 0.02, 1.0, 1.0));
+        rows.add(new LockPartRow(Config.LOCK_PART, "锁定部位", LockPart.CENTER));
+        rows.add(new NumRow(Config.HEAD_OFFSET, "头部微调（正=上，格）", -0.3, 0.3, 0.0));
         rows.add(new BoolRow(Config.TARGET_HOSTILES_ONLY, "仅锁定敌对生物", false));
         rows.add(new BoolRow(Config.INCLUDE_PLAYERS, "包含玩家", false));
         rows.add(new BoolRow(Config.SHOW_LOCKED_TARGET, "锁定目标高亮", true));
@@ -39,8 +42,9 @@ public class ConfigScreen extends Screen {
         int right = this.width / 2 + 150;
         int yTop = 18;
         int bottomY = this.height - 26;
-        // 动态行距：保证 8 行设置 + 底部按钮在任何 GUI 缩放下都落在屏幕内
-        int spacing = Math.max(14, Math.min(24, (bottomY - yTop - 36) / 7));
+        // 动态行距：保证所有设置行 + 底部按钮在任何 GUI 缩放下都落在屏幕内
+        // （rows.size()-1 个行间距；再留 22 像素给底部按钮行）
+        int spacing = Math.max(14, Math.min(24, (bottomY - yTop - 22) / Math.max(1, rows.size() - 1)));
         int y = yTop;
         for (Row row : rows) {
             row.y = y;
@@ -127,7 +131,8 @@ public class ConfigScreen extends Screen {
                 }
             };
             box.setValue(textOfCurrent());
-            box.setFilter(s -> s.matches("[0-9.]*"));
+            // 允许负号：头部微调的范围是 -0.3 ~ +0.3
+            box.setFilter(s -> s.matches("-?[0-9.]*"));
             screen.addRenderableWidget(box);
         }
 
@@ -163,6 +168,38 @@ public class ConfigScreen extends Screen {
             if (value instanceof ModConfigSpec.IntValue iv) iv.set((Integer) defaultValue);
             else if (value instanceof ModConfigSpec.DoubleValue dv) dv.set(((Number) defaultValue).doubleValue());
             box.setValue(textOfCurrent());
+        }
+    }
+
+    /** 枚举行：点按钮循环切换（如 身体中心 → 头部）。 */
+    private static class LockPartRow extends Row {
+        private final ModConfigSpec.EnumValue<LockPart> enumValue;
+        private Button toggle;
+
+        LockPartRow(ModConfigSpec.EnumValue<LockPart> value, String label, LockPart defaultValue) {
+            super(value, label, defaultValue);
+            this.enumValue = value;
+        }
+
+        @Override
+        void build(ConfigScreen screen, int left, int right) {
+            toggle = Button.builder(Component.translatable(current().translationKey()), b -> {
+                enumValue.set(current().next());
+                b.setMessage(Component.translatable(current().translationKey()));
+                Config.refresh();
+                Config.save();
+            }).bounds(right - 72, y, 72, 20).build();
+            screen.addRenderableWidget(toggle);
+        }
+
+        LockPart current() {
+            return enumValue.get();
+        }
+
+        @Override
+        void reset() {
+            enumValue.set((LockPart) defaultValue);
+            toggle.setMessage(Component.translatable(current().translationKey()));
         }
     }
 

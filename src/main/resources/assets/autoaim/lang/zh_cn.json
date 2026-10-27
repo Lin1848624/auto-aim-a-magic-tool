@@ -3,5 +3,9 @@
   "key.autoaim.toggle_display": "显示周围生物",
   "key.autoaim.lock": "锁定目标",
   "key.autoaim.unlock": "取消锁定",
-  "key.autoaim.open_config": "打开配置界面"
+  "key.autoaim.toggle_lock_part": "切换锁定部位（身体中心/头部）",
+  "key.autoaim.open_config": "打开配置界面",
+  "autoaim.lock_part.center": "身体中心",
+  "autoaim.lock_part.head": "头部",
+  "autoaim.lock_part.toast": "锁定部位：%s"
 }

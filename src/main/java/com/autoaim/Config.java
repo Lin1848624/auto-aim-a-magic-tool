@@ -1,5 +1,6 @@
 package com.autoaim;
 
+import com.autoaim.client.LockPart;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.event.config.ModConfigEvent;
@@ -28,6 +29,14 @@ public final class Config {
     public static final ModConfigSpec.DoubleValue AIM_SPEED = BUILDER
             .comment("自动瞄准速度（1.0 = 立即瞄准，越小越平滑）")
             .defineInRange("aimSpeed", 1.0, 0.02, 1.0);
+    public static final ModConfigSpec.EnumValue<LockPart> LOCK_PART = BUILDER
+            .comment("锁定部位：CENTER = 碰撞箱中心（腰部）；HEAD = 头部（眼睛高度）",
+                    "枪械模组（如 TaCZ）的爆头判定默认取「离脚底高度落在眼睛高度 ±0.25 格内」，故 HEAD 模式瞄准眼睛高度")
+            .defineEnum("lockPart", LockPart.CENTER);
+    public static final ModConfigSpec.DoubleValue HEAD_OFFSET = BUILDER
+            .comment("头部瞄准点的上下微调（格，正数 = 更靠上）",
+                    "仅在锁定部位 = HEAD 时生效；结果会被收进碰撞箱内部，避免瞄到箱外导致子弹擦头飞过")
+            .defineInRange("headOffset", 0.0, -0.3, 0.3);
     public static final ModConfigSpec.BooleanValue TARGET_HOSTILES_ONLY = BUILDER
             .comment("仅锁定敌对生物")
             .define("targetHostilesOnly", false);
@@ -47,6 +56,8 @@ public final class Config {
     public static int lockRange;
     public static double lockAngle;
     public static double aimSpeed;
+    public static LockPart lockPart;
+    public static double headOffset;
     public static boolean targetHostilesOnly;
     public static boolean includePlayers;
     public static boolean showLockedTarget;
@@ -67,6 +78,8 @@ public final class Config {
         lockRange = LOCK_RANGE.get();
         lockAngle = LOCK_ANGLE.get();
         aimSpeed = AIM_SPEED.get();
+        lockPart = LOCK_PART.get();
+        headOffset = HEAD_OFFSET.get();
         targetHostilesOnly = TARGET_HOSTILES_ONLY.get();
         includePlayers = INCLUDE_PLAYERS.get();
         showLockedTarget = SHOW_LOCKED_TARGET.get();

@@ -57,6 +57,31 @@ public final class AimController {
     }
 
     /**
+     * 瞄准点相对实体脚底的高度偏移。
+     * <ul>
+     *   <li>CENTER：碰撞箱高度的一半（腰部/胸口）；</li>
+     *   <li>HEAD：眼睛高度 + 微调，即 TaCZ 爆头判定带（眼睛高度 ±0.25 格）的中心。</li>
+     * </ul>
+     * HEAD 模式的结果会被收进碰撞箱内部（上下各留 0.05 格）：否则微调为正时瞄准点会跑到箱顶之上，
+     * 子弹只会从头顶飞过而不判命中；微调为负时同理不能掉到脚底以下。
+     */
+    public static double aimHeightOffset(double bbHeight, double eyeHeight, LockPart part, double headOffset) {
+        if (part != LockPart.HEAD) return bbHeight * 0.5;
+        double y = eyeHeight + headOffset;
+        if (bbHeight > 0.1) {
+            y = Math.max(0.05, Math.min(bbHeight - 0.05, y));
+        }
+        return y;
+    }
+
+    /** 瞄准点世界坐标：x/z 沿用实体碰撞箱中心，y = 脚底 + {@link #aimHeightOffset}。 */
+    public static V3 aimPoint(V3 feetCenter, double bbHeight, double eyeHeight, LockPart part, double headOffset) {
+        return new V3(feetCenter.x(),
+                feetCenter.y() + aimHeightOffset(bbHeight, eyeHeight, part, headOffset),
+                feetCenter.z());
+    }
+
+    /**
      * 弹道求解：求发射角使弹体飞行 t tick 后命中目标（目标按自身速度外推）。
      * 求解使用无阻力模型（drag=1.0）；阻力差异对弓/三叉戟的近距离影响很小。
      * 返回空表示目标在当前弹速/重力下不可达。
